@@ -29,7 +29,6 @@ app.post("/create-payment-intent", async (req, res) => {
     if (!amount || !currency) {
       return res.status(400).json({ error: "Missing amount or currency" });
     }
-
     if (!customerId) {
       return res.status(400).json({ error: "Missing customerId" });
     }
@@ -37,9 +36,9 @@ app.post("/create-payment-intent", async (req, res) => {
     const paymentIntent = await stripe.paymentIntents.create({
       amount,
       currency,
-      customer: customerId, // 👈 required so saved cards work
-      payment_method: paymentMethodId || undefined, // optional: use a saved pm_xxx
-      automatic_payment_methods: { enabled: true },
+      customer: customerId,                     // 👈 attach customer
+      payment_method: paymentMethodId || null,  // 👈 optional: saved card
+      automatic_payment_methods: { enabled: !paymentMethodId }, // if no saved card
     });
 
     res.json({ clientSecret: paymentIntent.client_secret });
@@ -48,6 +47,7 @@ app.post("/create-payment-intent", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // ✅ Create Stripe customer
 app.post("/create-stripe-customer", async (req, res) => {
