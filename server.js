@@ -21,24 +21,21 @@ app.get("/healthz", (req, res) => {
   res.status(200).send("OK");
 });
 
-// ✅ Create PaymentIntent route
 app.post("/create-payment-intent", async (req, res) => {
   try {
     const { amount, currency, customerId, paymentMethodId } = req.body;
 
-    if (!amount || !currency) {
-      return res.status(400).json({ error: "Missing amount or currency" });
-    }
-    if (!customerId) {
-      return res.status(400).json({ error: "Missing customerId" });
+    if (!amount || !currency || !customerId || !paymentMethodId) {
+      return res.status(400).json({ error: "Missing parameters" });
     }
 
     const paymentIntent = await stripe.paymentIntents.create({
       amount,
       currency,
-      customer: customerId,                     // 👈 attach customer
-      payment_method: paymentMethodId || null,  // 👈 optional: saved card
-      automatic_payment_methods: { enabled: !paymentMethodId }, // if no saved card
+      customer: customerId,         // 👈 link to Stripe Customer
+      payment_method: paymentMethodId, // 👈 use saved card
+      off_session: true,
+      confirm: true, // 👈 auto-confirm since we have card + customer
     });
 
     res.json({ clientSecret: paymentIntent.client_secret });
@@ -47,6 +44,7 @@ app.post("/create-payment-intent", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 // ✅ Create Stripe customer
