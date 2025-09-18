@@ -6,7 +6,11 @@
 .env
 .env.local
 .env.*.local
-
+.env*
+*.key
+*.pem
+*.crt
+!.env.example
 # Firebase admin credentials
 *firebase-adminsdk.json
 
