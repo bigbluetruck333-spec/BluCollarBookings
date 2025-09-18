@@ -24,15 +24,21 @@ app.get("/healthz", (req, res) => {
 // ✅ Create PaymentIntent route
 app.post("/create-payment-intent", async (req, res) => {
   try {
-    const { amount, currency } = req.body;
+    const { amount, currency, customerId, paymentMethodId } = req.body;
 
     if (!amount || !currency) {
       return res.status(400).json({ error: "Missing amount or currency" });
     }
 
+    if (!customerId) {
+      return res.status(400).json({ error: "Missing customerId" });
+    }
+
     const paymentIntent = await stripe.paymentIntents.create({
       amount,
       currency,
+      customer: customerId, // 👈 required so saved cards work
+      payment_method: paymentMethodId || undefined, // optional: use a saved pm_xxx
       automatic_payment_methods: { enabled: true },
     });
 
