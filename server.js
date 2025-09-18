@@ -21,29 +21,42 @@ app.get("/healthz", (req, res) => {
   res.status(200).send("OK");
 });
 
+// ✅ Create PaymentIntent route
 app.post("/create-payment-intent", async (req, res) => {
   try {
-    const { amount, currency, customerId, paymentMethodId } = req.body;
+    const { amount, currency, customerId, paymentMethodId, tokenAmount } = req.body;
 
     if (!amount || !currency || !customerId || !paymentMethodId) {
       return res.status(400).json({ error: "Missing parameters" });
     }
 
+    // Create and confirm the PaymentIntent
     const paymentIntent = await stripe.paymentIntents.create({
       amount,
       currency,
-      customer: customerId,         // 👈 link to Stripe Customer
-      payment_method: paymentMethodId, // 👈 use saved card
-      off_session: true,
-      confirm: true, // 👈 auto-confirm since we have card + customer
+      customer: customerId,
+      payment_method: paymentMethodId,
+      confirm: true,
     });
 
-    res.json({ clientSecret: paymentIntent.client_secret });
+    // ✅ If the payment succeeded, trigger BluToken awarding logic
+    if (paymentIntent.status === "succeeded") {
+      // Example: save tokens to your DB (Firebase, SQL, etc.)
+      // For now, just return the tokenAmount back to the client
+      return res.json({
+        clientSecret: paymentIntent.client_secret,
+        status: paymentIntent.status,
+        awardedTokens: tokenAmount || 0,
+      });
+    }
+
+    res.json({ clientSecret: paymentIntent.client_secret, status: paymentIntent.status });
   } catch (err) {
     console.error("❌ Stripe Error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 
