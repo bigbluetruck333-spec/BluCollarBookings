@@ -1,4 +1,3 @@
-// server.js
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
@@ -17,8 +16,15 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 
 // ✅ Firebase setup
 if (!admin.apps.length) {
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+
+  // 🔹 Fix: replace escaped newlines with actual newlines
+  if (serviceAccount.private_key) {
+    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
+  }
+
   admin.initializeApp({
-    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)),
+    credential: admin.credential.cert(serviceAccount),
     databaseURL: process.env.FIREBASE_DB_URL,
   });
 }
