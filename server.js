@@ -161,10 +161,10 @@ app.post("/create-setup-intent", async (req, res) => {
 
 
 // ----------------------------
-// ✅ NEW: Stripe Connect for Companies
+// ✅ Stripe Connect for Companies
 // ----------------------------
 
-// Step 1: Create Express onboarding link
+// Step 1: Create or reuse Express onboarding link
 app.post("/stripe/connect", async (req, res) => {
   try {
     const { companyUUID } = req.body;
@@ -173,23 +173,31 @@ app.post("/stripe/connect", async (req, res) => {
       return res.status(400).json({ error: "Missing company UUID" });
     }
 
-    // Create a new Stripe Connect account
-    const account = await stripe.accounts.create({
-      type: "express",
-      country: "US", // adjust if needed
-      capabilities: {
-        transfers: { requested: true },
-      },
-    });
+    // 🔹 Check if an account already exists
+    const snapshot = await db.ref(`users/companies/${companyUUID}/companySettings/stripeAccountId`).once("value");
+    let stripeAccountId = snapshot.val();
 
-    // Save accountId immediately to Firebase
-    await db.ref(`users/companies/${companyUUID}/companySettings`).update({
-      stripeAccountId: account.id,
-    });
+    if (!stripeAccountId) {
+      // Create a new Stripe Connect account only if it doesn't exist
+      const account = await stripe.accounts.create({
+        type: "express",
+        country: "US", // adjust if needed
+        capabilities: {
+          transfers: { requested: true },
+        },
+      });
 
-    // Generate onboarding link
+      stripeAccountId = account.id;
+
+      // Save accountId immediately to Firebase
+      await db.ref(`users/companies/${companyUUID}/companySettings`).update({
+        stripeAccountId,
+      });
+    }
+
+    // Generate onboarding link for this account
     const accountLink = await stripe.accountLinks.create({
-      account: account.id,
+      account: stripeAccountId,
       refresh_url: `${process.env.BASE_URL}/stripe/connect/refresh?companyUUID=${companyUUID}`,
       return_url: `${process.env.BASE_URL}/stripe/connect/success?companyUUID=${companyUUID}`,
       type: "account_onboarding",
@@ -218,6 +226,41 @@ app.get("/stripe/connect/refresh", async (req, res) => {
     res.send("<h1>⚠️ Onboarding was interrupted. Please try again.</h1>");
   } catch (err) {
     res.status(500).send("❌ Error refreshing onboarding");
+  }
+});
+
+// Step 4: ✅ Check Stripe account status
+app.get("/stripe/account-status/:companyUUID", async (req, res) => {
+  try {
+    const { companyUUID } = req.params;
+
+    if (!companyUUID) {
+      return res.status(400).json({ error: "Missing company UUID" });
+    }
+
+    // Fetch account ID from Firebase
+    const snapshot = await db.ref(`users/companies/${companyUUID}/companySettings/stripeAccountId`).once("value");
+    const stripeAccountId = snapshot.val();
+
+    if (!stripeAccountId) {
+      return res.status(404).json({ error: "No Stripe account linked" });
+    }
+
+    // Fetch account details from Stripe
+    const account = await stripe.accounts.retrieve(stripeAccountId);
+
+    res.json({
+      accountId: account.id,
+      email: account.email || null,
+      businessType: account.business_type || null,
+      capabilities: account.capabilities,
+      chargesEnabled: account.charges_enabled,
+      payoutsEnabled: account.payouts_enabled,
+      requirements: account.requirements,
+    });
+  } catch (err) {
+    console.error("❌ Error checking Stripe account status:", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
