@@ -34,13 +34,20 @@ app.get("/healthz", (req, res) => {
 // ✅ Create PaymentIntent route
 app.post("/create-payment-intent", async (req, res) => {
   try {
-    const { amount, currency, customerId, paymentMethodId, tokenAmount } = req.body;
+    const { amount, currency, customerId, paymentMethodId, tokenAmount, companyUUID } = req.body;
 
     if (!amount || !currency || !customerId || !paymentMethodId) {
       return res.status(400).json({ error: "Missing parameters" });
     }
 
-    const paymentIntent = await stripe.paymentIntents.create({
+    // 🔹 Fetch the company's connected Stripe account
+    let stripeAccountId = null;
+    if (companyUUID) {
+      const snapshot = await db.ref(`users/companies/${companyUUID}/companySettings/stripeAccountId`).once("value");
+      stripeAccountId = snapshot.val();
+    }
+
+    const paymentIntentData = {
       amount,
       currency,
       customer: customerId,
@@ -50,7 +57,16 @@ app.post("/create-payment-intent", async (req, res) => {
         enabled: true,
         allow_redirects: "never",
       },
-    });
+    };
+
+    // 🔹 If company has a connected account, route funds directly
+    if (stripeAccountId) {
+      paymentIntentData.transfer_data = {
+        destination: stripeAccountId,
+      };
+    }
+
+    const paymentIntent = await stripe.paymentIntents.create(paymentIntentData);
 
     if (paymentIntent.status === "succeeded") {
       return res.json({
