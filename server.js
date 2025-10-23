@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
@@ -13,7 +14,7 @@ const port = process.env.PORT || 4242;
 // Stripe setup (pure JS)
 // -------------------------
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  // Tip: let Stripe use your account default API version, or pin to a valid date.
+  // Let Stripe use your default API version or pin a valid one
   // apiVersion: "2024-06-20",
 });
 
@@ -33,9 +34,8 @@ if (!admin.apps.length) {
 const db = admin.database();
 
 // ---------------------------------------------------
-// (Optional) Webhook route: must use raw body
-// Put this BEFORE json middleware to preserve raw body.
-// Only registered if you set STRIPE_WEBHOOK_SECRET.
+// (Optional) Webhook route: must use raw body and be
+// registered BEFORE json middleware.
 // ---------------------------------------------------
 if (process.env.STRIPE_WEBHOOK_SECRET) {
   app.post(
@@ -49,8 +49,7 @@ if (process.env.STRIPE_WEBHOOK_SECRET) {
           sig,
           process.env.STRIPE_WEBHOOK_SECRET
         );
-        // TODO handle events (invoice.paid, invoice.payment_failed, etc.)
-        // console.log("Webhook:", event.type);
+        // TODO: handle invoice.paid, invoice.payment_failed, etc.
         res.json({ received: true });
       } catch (err) {
         console.error("Webhook verify failed:", err.message);
@@ -71,7 +70,7 @@ app.get("/healthz", (_req, res) => {
 });
 
 // ---------------------------------------------------
-// Helpers (no TS types)
+// Helpers
 // ---------------------------------------------------
 const SURCHARGE_LOW_PERCENT = 3;   // hardcoded per your choice
 const SURCHARGE_HIGH_PERCENT = 7;
@@ -119,7 +118,7 @@ function customerTicketRef(customerUserId, ticketId) {
 }
 
 // ---------------------------------------------------
-// Existing routes (unchanged logic, JS syntax)
+// Payments (unchanged behavior)
 // ---------------------------------------------------
 app.post("/create-payment-intent", async (req, res) => {
   try {
@@ -169,6 +168,9 @@ app.post("/create-payment-intent", async (req, res) => {
   }
 });
 
+// ---------------------------------------------------
+// Stripe customers & setup intents
+// ---------------------------------------------------
 app.post("/create-stripe-customer", async (req, res) => {
   try {
     const { email, firstName, lastName } = req.body;
@@ -225,8 +227,10 @@ app.post("/create-setup-intent", async (req, res) => {
 });
 
 // ----------------------------
-// Stripe Connect (unchanged behavior)
+// Stripe Connect (Option A)
 // ----------------------------
+// - Request card_payments when creating new accounts
+// - If an existing account lacks card_payments, request it
 app.post("/stripe/connect", async (req, res) => {
   try {
     const { companyUUID } = req.body;
@@ -235,16 +239,33 @@ app.post("/stripe/connect", async (req, res) => {
     let stripeAccountId = await getStripeAccountId(companyUUID);
 
     if (!stripeAccountId) {
+      // Create a brand-new Express account with both capabilities requested
       const account = await stripe.accounts.create({
         type: "express",
         country: "US",
-        capabilities: { transfers: { requested: true } },
+        capabilities: {
+          transfers: { requested: true },
+          card_payments: { requested: true }, // ✅ request card_payments
+        },
       });
       stripeAccountId = account.id;
 
       await db.ref(`users/companies/${companyUUID}/companySettings`).update({
         stripeAccountId,
       });
+    } else {
+      // Ensure the existing account has card_payments requested
+      const acct = await stripe.accounts.retrieve(stripeAccountId);
+      const hasCardPayments =
+        acct.capabilities &&
+        (acct.capabilities.card_payments === "active" ||
+         acct.capabilities.card_payments === "pending");
+
+      if (!hasCardPayments) {
+        await stripe.accounts.update(stripeAccountId, {
+          capabilities: { card_payments: { requested: true } }, // ✅ request it
+        });
+      }
     }
 
     const accountLink = await stripe.accountLinks.create({
@@ -304,7 +325,8 @@ app.get("/stripe/account-status/:companyUUID", async (req, res) => {
 });
 
 // ---------------------------------------------------
-// NEW: Create Invoice with surcharge + ticket metadata
+// Create Invoice with surcharge + ticket metadata
+// (Option A: use on_behalf_of, needs card_payments capability)
 // ---------------------------------------------------
 app.post("/invoices/create", async (req, res) => {
   try {
@@ -321,6 +343,7 @@ app.post("/invoices/create", async (req, res) => {
     const customerDetails = ticket.customerDetails || {};
     const customerUserId = String(customerDetails.userId || "");
 
+    // compute surcharge
     const p = String(priority || (ticket.ticketSettings?.priority ?? "Low")).toLowerCase();
     let percent = 0;
     if (p === "low") percent = SURCHARGE_LOW_PERCENT;
@@ -330,8 +353,11 @@ app.post("/invoices/create", async (req, res) => {
     const surchargeCents = Math.round((percent / 100) * totalCents);
 
     const stripeAccountId = await getStripeAccountId(companyUUID);
-    if (!stripeAccountId) return res.status(400).json({ error: "Company is not linked to Stripe Connect" });
+    if (!stripeAccountId) {
+      return res.status(400).json({ error: "Company is not linked to Stripe Connect" });
+    }
 
+    // Ensure platform customer
     const platformCustomerId = await getOrCreatePlatformCustomer(ticketRef, {
       email: customerDetails.email,
       firstName: customerDetails.firstName,
@@ -339,17 +365,22 @@ app.post("/invoices/create", async (req, res) => {
       phone: customerDetails.phone,
     });
 
-    const surchargeLabel = `BluCollarBookings Service Charge (${percent}% = ${fmtDollarsFromCents(surchargeCents)})`;
+    const surchargeLabel = `BluCollarBookings Service Charge (${percent}% = ${fmtDollarsFromCents(
+      surchargeCents
+    )})`;
     const invoiceDesc = `Invoice for Ticket #${ticketId} • ${surchargeLabel}`;
 
+    // ✅ Option A: Use on_behalf_of + transfer_data + application_fee_amount
     const invoice = await stripe.invoices.create({
       customer: platformCustomerId,
       collection_method: "send_invoice",
       days_until_due: 3,
       description: invoiceDesc,
-      on_behalf_of: stripeAccountId,
-      transfer_data: { destination: stripeAccountId },
-      application_fee_amount: surchargeCents > 0 ? surchargeCents : undefined,
+
+      on_behalf_of: stripeAccountId,                        // ✅ requires card_payments
+      transfer_data: { destination: stripeAccountId },      // ✅ send net to company
+      application_fee_amount: surchargeCents > 0 ? surchargeCents : undefined, // ✅ platform fee
+
       metadata: {
         blucollar_ticket_id: ticketId,
         company_uuid: companyUUID,
@@ -361,6 +392,7 @@ app.post("/invoices/create", async (req, res) => {
       footer: `Ticket #${ticketId} • Includes ${surchargeLabel} collected by BluCollarBookings (platform fee).`,
     });
 
+    // Line item for the full service total
     await stripe.invoiceItems.create({
       customer: platformCustomerId,
       invoice: invoice.id,
@@ -382,6 +414,7 @@ app.post("/invoices/create", async (req, res) => {
     const amountDueDollars = (amountDueCents / 100).toFixed(2);
     const dueDate = finalized.due_date || null;
 
+    // Company record
     await ticketRef.child("invoices").set({
       invoiceId: finalized.id,
       hostedInvoiceUrl: hostedUrl,
@@ -405,6 +438,7 @@ app.post("/invoices/create", async (req, res) => {
       },
     });
 
+    // Mirror to customer + mark completed
     if (customerUserId) {
       const cRef = customerTicketRef(customerUserId, ticketId);
       await cRef.child("invoices").set({
@@ -428,8 +462,8 @@ app.post("/invoices/create", async (req, res) => {
       await cRef.child("ticketSettings").update({ BookingStatus: "Completed Booking" });
     }
 
+    // Move company ticket Active -> Completed
     await ticketRef.child("ticketSettings").update({ BookingStatus: "Completed Booking" });
-
     const activeSnap = await ticketRef.get();
     if (activeSnap.exists()) {
       await companyCompletedTicketRef(companyUUID, ticketId).set(activeSnap.val());
